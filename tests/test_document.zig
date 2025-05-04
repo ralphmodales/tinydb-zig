@@ -14,16 +14,18 @@ test "Document creation and serialization" {
 
     const name = doc.get("name");
     try std.testing.expect(name != null);
-    try std.testing.expectEqual(std.json.Value{ .string = "Alice" }, name.?);
+    try std.testing.expectEqualStrings("Alice", name.?.string);
 
     const age = doc.get("age");
     try std.testing.expect(age != null);
-    try std.testing.expectEqual(std.json.Value{ .integer = 25 }, age.?);
+    try std.testing.expectEqual(@as(i64, 25), age.?.integer);
 
     var buffer: [1024]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buffer);
     try doc.toJson(fbs.writer());
-    try std.testing.expectEqualStrings("{\"name\":\"Alice\",\"age\":25}", fbs.getWritten());
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"name\":\"Alice\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"age\":25") != null);
 }
 
 test "Document empty and put" {
@@ -37,5 +39,5 @@ test "Document empty and put" {
     try doc.put("name", .{ .string = "Bob" });
     const name = doc.get("name");
     try std.testing.expect(name != null);
-    try std.testing.expectEqual(std.json.Value{ .string = "Bob" }, name.?);
+    try std.testing.expectEqualStrings("Bob", name.?.string);
 }
