@@ -28,7 +28,13 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/document.zig"),
     });
 
+    const storage_module = b.addModule("storage", .{
+        .root_source_file = b.path("src/storage.zig"),
+    });
+    storage_module.addImport("document", document_module);
+
     const test_step = b.step("test", "Run all tests");
+
     const document_tests = b.addTest(.{
         .root_source_file = b.path("tests/test_document.zig"),
         .target = target,
@@ -36,6 +42,15 @@ pub fn build(b: *std.Build) void {
     });
     document_tests.root_module.addImport("document", document_module);
     test_step.dependOn(&document_tests.step);
+
+    const storage_tests = b.addTest(.{
+        .root_source_file = b.path("tests/test_storage.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    storage_tests.root_module.addImport("storage", storage_module);
+    storage_tests.root_module.addImport("document", document_module);
+    test_step.dependOn(&storage_tests.step);
 
     const example = b.addExecutable(.{
         .name = "basic_usage",
