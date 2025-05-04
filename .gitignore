@@ -1,0 +1,15 @@
+
+# Zig build output
+zig-out/
+.zig-cache/
+
+# Optional: VSCode settings
+.vscode/
+
+# Optional: OS/system-specific
+.DS_Store
+Thumbs.db
+
+# Optional: Logs or temporary files
+*.log
+*.tmp
