@@ -1,6 +1,7 @@
 const std = @import("std");
 const Document = @import("document").Document;
 const Storage = @import("storage").Storage;
+const Condition = @import("query").Condition;
 
 pub const Table = struct {
     name: []const u8,
@@ -43,8 +44,20 @@ pub const Table = struct {
         return id;
     }
 
-    pub fn search(self: Table) []Document {
-        return self.documents.items;
+    pub fn search(self: Table, condition: ?Condition) ![]Document {
+        if (condition == null) return self.documents.items;
+
+        var matches = std.ArrayList(Document).init(self.allocator);
+        defer matches.deinit();
+
+        for (self.documents.items) |doc| {
+            if (condition.?.evaluate(doc)) {
+                try matches.append(doc);
+            }
+        }
+
+        const result = try self.allocator.dupe(Document, matches.items);
+        return result;
     }
 
     pub fn update(self: *Table, id: u64, json_str: []const u8) !void {
