@@ -25,6 +25,11 @@ pub fn build(b: *std.Build) void {
     database_module.addImport("storage", storage_module);
     database_module.addImport("query", query_module);
 
+    const utils_module = b.addModule("utils", .{
+        .root_source_file = b.path("src/utils.zig"),
+    });
+    utils_module.addImport("query", query_module);
+
     const lib = b.addStaticLibrary(.{
         .name = "tinydb",
         .root_source_file = b.path("src/database.zig"),
@@ -39,6 +44,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    exe.root_module.addImport("database", database_module);
+    exe.root_module.addImport("query", query_module);
+    exe.root_module.addImport("utils", utils_module);
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
@@ -92,6 +100,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    example.root_module.addImport("database", database_module);
+    example.root_module.addImport("document", document_module);
+    example.root_module.addImport("query", query_module);
+    example.root_module.addImport("storage", storage_module);
+    example.root_module.addImport("utils", utils_module);
+
     const example_run = b.addRunArtifact(example);
     const example_step = b.step("example", "Run basic usage example");
     example_step.dependOn(&example_run.step);
