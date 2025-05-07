@@ -50,7 +50,7 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, cmd, "update")) {
             try handleUpdate(stdout, &db, &cmd_iter, allocator);
         } else if (std.mem.eql(u8, cmd, "delete")) {
-            try handleDelete(stdout, &db, &cmd_iter);
+            try handleDelete(stdout, &db, &cmd_iter, allocator);
         } else if (std.mem.eql(u8, cmd, "list")) {
             const next_cmd = cmd_iter.next() orelse {
                 try stdout.print("Error: Missing 'tables' or table name after 'list'\n", .{});
@@ -83,15 +83,17 @@ pub fn main() !void {
 fn printHelp(writer: anytype) !void {
     try writer.print(
         \\Commands:
-        \\  help                         - Show this help message
-        \\  create <table>               - Create a new table
-        \\  insert <table> <json>        - Insert a new document into table
-        \\  find <table> [query]         - Find documents in table with optional query
-        \\  update <table> <id> <json>   - Update document by ID
-        \\  delete <table> <id>          - Delete document by ID
-        \\  list tables                  - List all tables
-        \\  list <table>                 - List all documents in table
-        \\  exit, quit                   - Exit the program
+        \\  help                                 - Show this help message
+        \\  create <table>                       - Create a new table
+        \\  insert <table> <json>                - Insert a new document into table
+        \\  find <table> [query]                 - Find documents in table with optional query
+        \\  update <table> <id> <json>           - Update document by ID
+        \\  update <table> <query> with <json>   - Update documents matching query
+        \\  delete <table> <id>                  - Delete document by ID
+        \\  delete <table> <query>               - Delete documents matching query
+        \\  list tables                          - List all tables
+        \\  list <table>                         - List all documents in table
+        \\  exit, quit                           - Exit the program
         \\
         \\Query Syntax:
         \\  Simple: field op value
@@ -112,7 +114,9 @@ fn printHelp(writer: anytype) !void {
         \\  find users (age gt 20) OR (name eq "Jane")
         \\  find users NOT (age lt 30)
         \\  update users 1 {{"name":"John","age":31}}
+        \\  update users age gt 25 with {{"status":"senior"}}
         \\  delete users 1
+        \\  delete users age lt 18
         \\  list tables
         \\  list users
         \\
@@ -223,6 +227,7 @@ const TokenType = enum {
     leftParen,
     rightParen,
     logicalOperator,
+    updateKeyword,
 };
 
 const Token = struct {
@@ -338,6 +343,10 @@ fn decideTokenType(value: []const u8) Token {
         std.mem.eql(u8, value, "matches"))
     {
         return Token{ .type = .operator, .value = value };
+    }
+
+    if (std.mem.eql(u8, value, "with")) {
+        return Token{ .type = .updateKeyword, .value = value };
     }
 
     return Token{ .type = .field, .value = value };
@@ -470,74 +479,133 @@ fn handleUpdate(
         return;
     };
 
-    const id_str = cmd_iter.next() orelse {
-        try writer.print("Error: Missing ID\n", .{});
-        return;
-    };
-
-    const id = std.fmt.parseInt(u64, id_str, 10) catch {
-        try writer.print("Error: Invalid ID '{s}'\n", .{id_str});
-        return;
-    };
-
-    var json_string = std.ArrayList(u8).init(allocator);
-    defer json_string.deinit();
-    var first_part = true;
-    while (cmd_iter.next()) |part| {
-        if (!first_part) {
-            try json_string.append(' ');
-        } else {
-            first_part = false;
-        }
-        try json_string.appendSlice(part);
-    }
-
-    if (json_string.items.len == 0) {
-        try writer.print("Error: Missing JSON update data\n", .{});
-        return;
-    }
-
     const table_ptr = db.table(table_name) catch {
         try writer.print("Error: Table '{s}' not found\n", .{table_name});
         return;
     };
 
-    table_ptr.update(id, json_string.items) catch |err| {
-        switch (err) {
-            error.DocumentNotFound => try writer.print("Error: Document with ID {d} not found in table '{s}'\n", .{ id, table_name }),
-            else => {
-                const err_name = @errorName(err);
-                if (std.mem.eql(u8, err_name, "JsonParseFailed")) {
-                    try writer.print("Error: Invalid JSON format for update data\n", .{});
-                    try writer.print("  -> Check JSON syntax: {s}\n", .{json_string.items});
-                } else {
-                    try writer.print("Error during update: {s}\n", .{err_name});
-                }
-            },
-        }
+    const id_or_query = cmd_iter.next() orelse {
+        try writer.print("Error: Missing ID or query\n", .{});
         return;
     };
 
-    try writer.print("Document with ID {d} updated\n", .{id});
+    const id = std.fmt.parseInt(u64, id_or_query, 10) catch null;
+
+    if (id != null) {
+        var json_string = std.ArrayList(u8).init(allocator);
+        defer json_string.deinit();
+        var first_part = true;
+        while (cmd_iter.next()) |part| {
+            if (!first_part) {
+                try json_string.append(' ');
+            } else {
+                first_part = false;
+            }
+            try json_string.appendSlice(part);
+        }
+
+        if (json_string.items.len == 0) {
+            try writer.print("Error: Missing JSON update data\n", .{});
+            return;
+        }
+
+        table_ptr.updateById(id.?, json_string.items) catch |err| {
+            switch (err) {
+                error.DocumentNotFound => try writer.print("Error: Document with ID {d} not found in table '{s}'\n", .{ id.?, table_name }),
+                else => {
+                    const err_name = @errorName(err);
+                    if (std.mem.eql(u8, err_name, "JsonParseFailed")) {
+                        try writer.print("Error: Invalid JSON format for update data\n", .{});
+                        try writer.print("  -> Check JSON syntax: {s}\n", .{json_string.items});
+                    } else {
+                        try writer.print("Error during update: {s}\n", .{err_name});
+                    }
+                },
+            }
+            return;
+        };
+
+        try writer.print("Document with ID {d} updated\n", .{id.?});
+    } else {
+        var query_string = std.ArrayList(u8).init(allocator);
+        defer query_string.deinit();
+
+        try query_string.appendSlice(id_or_query);
+
+        var found_with = false;
+        var current_part: ?[]const u8 = null;
+
+        while (true) {
+            current_part = cmd_iter.next();
+            if (current_part == null) break;
+
+            if (std.mem.eql(u8, current_part.?, "with")) {
+                found_with = true;
+                break;
+            }
+
+            try query_string.append(' ');
+            try query_string.appendSlice(current_part.?);
+        }
+
+        if (!found_with) {
+            try writer.print("Error: Missing 'with' keyword in query-based update\n", .{});
+            try writer.print("Syntax: update <table> <query> with <json>\n", .{});
+            return;
+        }
+
+        var json_string = std.ArrayList(u8).init(allocator);
+        defer json_string.deinit();
+        var first_part = true;
+
+        while (cmd_iter.next()) |part| {
+            if (!first_part) {
+                try json_string.append(' ');
+            } else {
+                first_part = false;
+            }
+            try json_string.appendSlice(part);
+        }
+
+        if (json_string.items.len == 0) {
+            try writer.print("Error: Missing JSON update data after 'with' keyword\n", .{});
+            return;
+        }
+
+        var query_node = parseQuery(allocator, query_string.items) catch |err| {
+            try writer.print("Error parsing query: {s}\n", .{@errorName(err)});
+            return;
+        };
+        defer query_node.deinit();
+
+        const updated_count = table_ptr.update(query_node, json_string.items) catch |err| {
+            switch (err) {
+                error.NoDocumentsMatch => try writer.print("No documents matched the query\n", .{}),
+                else => {
+                    const err_name = @errorName(err);
+                    if (std.mem.eql(u8, err_name, "JsonParseFailed")) {
+                        try writer.print("Error: Invalid JSON format for update data\n", .{});
+                        try writer.print("  -> Check JSON syntax: {s}\n", .{json_string.items});
+                    } else {
+                        try writer.print("Error during update: {s}\n", .{err_name});
+                    }
+                },
+            }
+            return;
+        };
+
+        try writer.print("Updated {d} document(s) matching query\n", .{updated_count});
+    }
 }
 
 fn handleDelete(
     writer: anytype,
     db: *Database,
     cmd_iter: *std.mem.SplitIterator(u8, .sequence),
+    allocator: std.mem.Allocator,
 ) !void {
     const table_name = cmd_iter.next() orelse {
         try writer.print("Error: Missing table name\n", .{});
-        return;
-    };
-
-    const id_str = cmd_iter.next() orelse {
-        try writer.print("Error: Missing ID\n", .{});
-        return;
-    };
-
-    const id = std.fmt.parseInt(u64, id_str, 10) catch {
-        try writer.print("Error: Invalid ID '{s}'\n", .{id_str});
         return;
     };
 
@@ -546,15 +614,51 @@ fn handleDelete(
         return;
     };
 
-    table_ptr.remove(id) catch |err| {
-        switch (err) {
-            error.DocumentNotFound => try writer.print("Error: Document with ID {d} not found in table '{s}'\n", .{ id, table_name }),
-            else => try writer.print("Error during delete: {s}\n", .{@errorName(err)}),
-        }
+    const id_or_query = cmd_iter.next() orelse {
+        try writer.print("Error: Missing ID or query\n", .{});
         return;
     };
 
-    try writer.print("Document with ID {d} deleted\n", .{id});
+    const id = std.fmt.parseInt(u64, id_or_query, 10) catch null;
+
+    if (id != null) {
+        table_ptr.removeById(id.?) catch |err| {
+            switch (err) {
+                error.DocumentNotFound => try writer.print("Error: Document with ID {d} not found in table '{s}'\n", .{ id.?, table_name }),
+                else => try writer.print("Error during delete: {s}\n", .{@errorName(err)}),
+            }
+            return;
+        };
+
+        try writer.print("Document with ID {d} deleted\n", .{id.?});
+    } else {
+        var query_string = std.ArrayList(u8).init(allocator);
+        defer query_string.deinit();
+
+        try query_string.appendSlice(id_or_query);
+
+        while (cmd_iter.next()) |part| {
+            try query_string.append(' ');
+            try query_string.appendSlice(part);
+        }
+
+        var query_node = parseQuery(allocator, query_string.items) catch |err| {
+            try writer.print("Error parsing query: {s}\n", .{@errorName(err)});
+            return;
+        };
+        defer query_node.deinit();
+
+        const deleted_count = table_ptr.remove(query_node) catch |err| {
+            switch (err) {
+                error.NoDocumentsMatch => try writer.print("No documents matched the query\n", .{}),
+                error.QueryRequired => try writer.print("Error: Query is required for delete operation\n", .{}),
+                else => try writer.print("Error during delete: {s}\n", .{@errorName(err)}),
+            }
+            return;
+        };
+
+        try writer.print("Deleted {d} document(s) matching query\n", .{deleted_count});
+    }
 }
 
 fn listTables(writer: anytype, db: *Database) !void {

@@ -77,7 +77,7 @@ pub const Table = struct {
         return result;
     }
 
-    pub fn update(self: *Table, id: u64, json_str: []const u8) !void {
+    pub fn updateById(self: *Table, id: u64, json_str: []const u8) !void {
         for (self.documents.items) |*doc| {
             if (doc.id == id) {
                 doc.deinit();
@@ -89,7 +89,36 @@ pub const Table = struct {
         return error.DocumentNotFound;
     }
 
-    pub fn remove(self: *Table, id: u64) !void {
+    pub fn update(self: *Table, query_node: ?QueryNode, json_str: []const u8) !usize {
+        var updated_count: usize = 0;
+
+        const matches = try self.search(query_node);
+        defer self.allocator.free(matches);
+
+        if (matches.len == 0) {
+            return error.NoDocumentsMatch;
+        }
+
+        for (matches) |match| {
+            for (self.documents.items) |*doc| {
+                if (doc.id == match.id) {
+                    const id = doc.id;
+                    doc.deinit();
+                    doc.* = try Document.initFromJson(self.allocator, json_str, id);
+                    updated_count += 1;
+                    break;
+                }
+            }
+        }
+
+        if (updated_count > 0) {
+            try self.storage.write(self.documents.items);
+        }
+
+        return updated_count;
+    }
+
+    pub fn removeById(self: *Table, id: u64) !void {
         for (self.documents.items, 0..) |doc, i| {
             if (doc.id == id) {
                 var removed = self.documents.orderedRemove(i);
@@ -99,6 +128,51 @@ pub const Table = struct {
             }
         }
         return error.DocumentNotFound;
+    }
+
+    pub fn remove(self: *Table, query_node: ?QueryNode) !usize {
+        if (query_node == null) {
+            return error.QueryRequired;
+        }
+
+        const matches = try self.search(query_node);
+        defer self.allocator.free(matches);
+
+        if (matches.len == 0) {
+            return error.NoDocumentsMatch;
+        }
+
+        var ids_to_remove = std.ArrayList(u64).init(self.allocator);
+        defer ids_to_remove.deinit();
+
+        for (matches) |match| {
+            if (match.id) |id| {
+                try ids_to_remove.append(id);
+            }
+        }
+
+        var removed_count: usize = 0;
+
+        var i: usize = self.documents.items.len;
+        while (i > 0) {
+            i -= 1;
+            const doc = self.documents.items[i];
+
+            for (ids_to_remove.items) |id| {
+                if (doc.id == id) {
+                    var removed = self.documents.orderedRemove(i);
+                    removed.deinit();
+                    removed_count += 1;
+                    break;
+                }
+            }
+        }
+
+        if (removed_count > 0) {
+            try self.storage.write(self.documents.items);
+        }
+
+        return removed_count;
     }
 };
 
