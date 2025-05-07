@@ -41,10 +41,33 @@ pub const Document = struct {
     }
 
     pub fn get(self: Document, key: []const u8) ?std.json.Value {
-        if (self.data == .object) {
-            return self.data.object.get(key);
+        var path_iter = std.mem.splitSequence(u8, key, ".");
+        const first_key = path_iter.next() orelse return null;
+
+        if (path_iter.next() == null) {
+            if (self.data == .object) {
+                return self.data.object.get(first_key);
+            }
+            return null;
         }
-        return null;
+
+        path_iter = std.mem.splitSequence(u8, key, ".");
+
+        var current_value: ?std.json.Value = self.data;
+
+        while (path_iter.next()) |path_part| {
+            if (current_value == null or current_value.? != .object) {
+                return null;
+            }
+
+            current_value = current_value.?.object.get(path_part);
+
+            if (current_value == null) {
+                return null;
+            }
+        }
+
+        return current_value;
     }
 
     pub fn put(self: *Document, key: []const u8, value: std.json.Value) !void {

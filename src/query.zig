@@ -3,10 +3,17 @@ const Document = @import("document").Document;
 
 pub const Operator = enum {
     eq, // ==
+    ne, // !=
     gt, // >
     lt, // <
     ge, // >=
     le, // <=
+};
+
+pub const LogicalOperator = enum {
+    logical_and,
+    logical_or,
+    logical_not,
 };
 
 pub const Condition = struct {
@@ -18,6 +25,7 @@ pub const Condition = struct {
         const field_value = doc.get(self.field) orelse return false;
         return switch (self.operator) {
             .eq => compareValues(field_value, self.value, eqlValues),
+            .ne => !compareValues(field_value, self.value, eqlValues),
             .gt => compareValues(field_value, self.value, gt),
             .lt => compareValues(field_value, self.value, lt),
             .ge => compareValues(field_value, self.value, ge),
@@ -118,6 +126,100 @@ pub const Condition = struct {
     }
 };
 
+pub const QueryNode = union(enum) {
+    condition: Condition,
+    logical: LogicalExpression,
+
+    pub fn evaluate(self: QueryNode, doc: Document) bool {
+        return switch (self) {
+            .condition => |cond| cond.evaluate(doc),
+            .logical => |expr| expr.evaluate(doc),
+        };
+    }
+
+    pub fn andOp(allocator: std.mem.Allocator, left: QueryNode, right: QueryNode) !QueryNode {
+        var children = std.ArrayList(QueryNode).init(allocator);
+        try children.append(left);
+        try children.append(right);
+
+        return QueryNode{
+            .logical = LogicalExpression{
+                .operator = .logical_and,
+                .children = children,
+                .allocator = allocator,
+            },
+        };
+    }
+
+    pub fn orOp(allocator: std.mem.Allocator, left: QueryNode, right: QueryNode) !QueryNode {
+        var children = std.ArrayList(QueryNode).init(allocator);
+        try children.append(left);
+        try children.append(right);
+
+        return QueryNode{
+            .logical = LogicalExpression{
+                .operator = .logical_or,
+                .children = children,
+                .allocator = allocator,
+            },
+        };
+    }
+
+    pub fn notOp(allocator: std.mem.Allocator, child: QueryNode) !QueryNode {
+        var children = std.ArrayList(QueryNode).init(allocator);
+        try children.append(child);
+
+        return QueryNode{
+            .logical = LogicalExpression{
+                .operator = .logical_not,
+                .children = children,
+                .allocator = allocator,
+            },
+        };
+    }
+
+    pub fn deinit(self: *QueryNode) void {
+        switch (self.*) {
+            .logical => |*expr| expr.deinit(),
+            else => {},
+        }
+    }
+};
+
+pub const LogicalExpression = struct {
+    operator: LogicalOperator,
+    children: std.ArrayList(QueryNode),
+    allocator: std.mem.Allocator,
+
+    pub fn evaluate(self: LogicalExpression, doc: Document) bool {
+        switch (self.operator) {
+            .logical_and => {
+                for (self.children.items) |child| {
+                    if (!child.evaluate(doc)) return false;
+                }
+                return true;
+            },
+            .logical_or => {
+                for (self.children.items) |child| {
+                    if (child.evaluate(doc)) return true;
+                }
+                return false;
+            },
+            .logical_not => {
+                if (self.children.items.len == 0) return true;
+                return !self.children.items[0].evaluate(doc);
+            },
+        }
+    }
+
+    pub fn deinit(self: *LogicalExpression) void {
+        for (self.children.items) |*child| {
+            child.deinit();
+        }
+        self.children.deinit();
+    }
+};
+
 pub const Query = struct {
     allocator: std.mem.Allocator,
 
@@ -134,44 +236,52 @@ pub const FieldQuery = struct {
     query: Query,
     field: []const u8,
 
-    pub fn eq(self: FieldQuery, value: anytype) Condition {
-        return Condition{
+    pub fn eq(self: FieldQuery, value: anytype) QueryNode {
+        return QueryNode{ .condition = Condition{
             .field = self.field,
             .operator = .eq,
             .value = jsonValue(value),
-        };
+        } };
     }
 
-    pub fn gt(self: FieldQuery, value: anytype) Condition {
-        return Condition{
+    pub fn ne(self: FieldQuery, value: anytype) QueryNode {
+        return QueryNode{ .condition = Condition{
+            .field = self.field,
+            .operator = .ne,
+            .value = jsonValue(value),
+        } };
+    }
+
+    pub fn gt(self: FieldQuery, value: anytype) QueryNode {
+        return QueryNode{ .condition = Condition{
             .field = self.field,
             .operator = .gt,
             .value = jsonValue(value),
-        };
+        } };
     }
 
-    pub fn lt(self: FieldQuery, value: anytype) Condition {
-        return Condition{
+    pub fn lt(self: FieldQuery, value: anytype) QueryNode {
+        return QueryNode{ .condition = Condition{
             .field = self.field,
             .operator = .lt,
             .value = jsonValue(value),
-        };
+        } };
     }
 
-    pub fn ge(self: FieldQuery, value: anytype) Condition {
-        return Condition{
+    pub fn ge(self: FieldQuery, value: anytype) QueryNode {
+        return QueryNode{ .condition = Condition{
             .field = self.field,
             .operator = .ge,
             .value = jsonValue(value),
-        };
+        } };
     }
 
-    pub fn le(self: FieldQuery, value: anytype) Condition {
-        return Condition{
+    pub fn le(self: FieldQuery, value: anytype) QueryNode {
+        return QueryNode{ .condition = Condition{
             .field = self.field,
             .operator = .le,
             .value = jsonValue(value),
-        };
+        } };
     }
 };
 

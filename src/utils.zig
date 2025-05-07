@@ -4,6 +4,8 @@ const Operator = @import("query").Operator;
 pub fn stringToOperator(op_str: []const u8) !Operator {
     if (std.mem.eql(u8, op_str, "eq")) {
         return Operator.eq;
+    } else if (std.mem.eql(u8, op_str, "ne")) {
+        return Operator.ne;
     } else if (std.mem.eql(u8, op_str, "gt")) {
         return Operator.gt;
     } else if (std.mem.eql(u8, op_str, "lt")) {

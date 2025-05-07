@@ -1,7 +1,10 @@
 const std = @import("std");
 const Database = @import("database").Database;
 const Query = @import("query").Query;
+const QueryNode = @import("query").QueryNode;
 const Condition = @import("query").Condition;
+const Operator = @import("query").Operator;
+const LogicalOperator = @import("query").LogicalOperator;
 const utils = @import("utils");
 
 pub fn main() !void {
@@ -83,21 +86,29 @@ fn printHelp(writer: anytype) !void {
         \\  help                         - Show this help message
         \\  create <table>               - Create a new table
         \\  insert <table> <json>        - Insert a new document into table
-        \\  find <table> [field op value] - Find documents in table with optional condition
+        \\  find <table> [query]         - Find documents in table with optional query
         \\  update <table> <id> <json>   - Update document by ID
         \\  delete <table> <id>          - Delete document by ID
         \\  list tables                  - List all tables
         \\  list <table>                 - List all documents in table
         \\  exit, quit                   - Exit the program
         \\
-        \\Operators (for find):
-        \\  eq, gt, lt, ge, le           - Equal, Greater Than, Less Than, Greater/Equal, Less/Equal
+        \\Query Syntax:
+        \\  Simple: field op value
+        \\  Complex: (field1 op1 value1) AND|OR (field2 op2 value2)
+        \\  Negation: NOT (field op value)
+        \\
+        \\Operators:
+        \\  eq, ne, gt, lt, ge, le       - Equal, Not Equal, Greater Than, Less Than, Greater/Equal, Less/Equal
+        \\  AND, OR, NOT                 - Logical operators (case insensitive)
         \\
         \\Examples:
         \\  create users
         \\  insert users {{"name":"John","age":30}}
         \\  find users age gt 25
-        \\  find users name eq "John"
+        \\  find users (age gt 25) AND (name eq "John")
+        \\  find users (age gt 20) OR (name eq "Jane")
+        \\  find users NOT (age lt 30)
         \\  update users 1 {{"name":"John","age":31}}
         \\  delete users 1
         \\  list tables
@@ -167,9 +178,17 @@ fn handleFind(
         return;
     };
 
-    const field_maybe = cmd_iter.next();
+    var query_string = std.ArrayList(u8).init(allocator);
+    defer query_string.deinit();
 
-    if (field_maybe == null) {
+    while (cmd_iter.next()) |part| {
+        if (query_string.items.len > 0) {
+            try query_string.append(' ');
+        }
+        try query_string.appendSlice(part);
+    }
+
+    if (query_string.items.len == 0) {
         const docs = try table_ptr.search(null);
         try writer.print("Found {d} documents in table '{s}':\n", .{ docs.len, table_name });
         for (docs) |doc| {
@@ -180,80 +199,245 @@ fn handleFind(
         return;
     }
 
-    const field: []const u8 = field_maybe.?;
-
-    const op_str = cmd_iter.next() orelse {
-        try writer.print("Error: Missing operator after field '{s}'\n", .{field});
+    var query_node = parseQuery(allocator, query_string.items) catch |err| {
+        try writer.print("Error parsing query: {s}\n", .{@errorName(err)});
         return;
     };
+    defer query_node.deinit();
 
-    const value_str = cmd_iter.next() orelse {
-        try writer.print("Error: Missing value after operator '{s}'\n", .{op_str});
-        return;
-    };
+    const docs = try table_ptr.search(query_node);
+    try writer.print("Found {d} documents in table '{s}' matching query:\n", .{ docs.len, table_name });
+    for (docs) |doc| {
+        try writer.print("ID: {?d} - ", .{doc.id});
+        try doc.toJson(writer);
+        try writer.print("\n", .{});
+    }
+}
 
-    var remaining_value_parts = std.ArrayList(u8).init(allocator);
-    defer remaining_value_parts.deinit();
-    while (cmd_iter.next()) |part| {
-        try remaining_value_parts.appendSlice(" ");
-        try remaining_value_parts.appendSlice(part);
+const TokenType = enum {
+    field,
+    operator,
+    value,
+    leftParen,
+    rightParen,
+    logicalOperator,
+};
+
+const Token = struct {
+    type: TokenType,
+    value: []const u8,
+};
+
+fn parseQuery(allocator: std.mem.Allocator, query_str: []const u8) !QueryNode {
+    var tokens = std.ArrayList(Token).init(allocator);
+    defer tokens.deinit();
+
+    try tokenizeQuery(allocator, query_str, &tokens);
+
+    if (tokens.items.len == 0) {
+        return error.EmptyQuery;
     }
 
-    var full_value_str_list = std.ArrayList(u8).init(allocator);
-    defer full_value_str_list.deinit();
-    try full_value_str_list.appendSlice(value_str);
-    try full_value_str_list.appendSlice(remaining_value_parts.items);
-    const final_value_str = full_value_str_list.items;
+    if (tokens.items.len == 3 and
+        tokens.items[0].type == .field and
+        tokens.items[1].type == .operator and
+        tokens.items[2].type == .value)
+    {
+        return try parseSimpleCondition(allocator, tokens.items[0].value, tokens.items[1].value, tokens.items[2].value);
+    }
 
+    var pos: usize = 0;
+    return try parseExpression(allocator, tokens.items, &pos);
+}
+
+fn tokenizeQuery(allocator: std.mem.Allocator, query_str: []const u8, tokens: *std.ArrayList(Token)) !void {
+    var i: usize = 0;
+    var in_quotes = false;
+    var token_start: usize = 0;
+    var current_token = std.ArrayList(u8).init(allocator);
+    defer current_token.deinit();
+
+    while (i < query_str.len) {
+        const c = query_str[i];
+
+        if (c == '"') {
+            if (!in_quotes) {
+                in_quotes = true;
+                token_start = i + 1;
+            } else {
+                try current_token.appendSlice(query_str[token_start..i]);
+                try tokens.append(Token{ .type = .value, .value = try allocator.dupe(u8, current_token.items) });
+                current_token.clearRetainingCapacity();
+                in_quotes = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if (in_quotes) {
+            i += 1;
+            continue;
+        }
+
+        if (c == '(') {
+            try tokens.append(Token{ .type = .leftParen, .value = "(" });
+            i += 1;
+            continue;
+        } else if (c == ')') {
+            if (current_token.items.len > 0) {
+                try tokens.append(decideTokenType(try allocator.dupe(u8, current_token.items)));
+                current_token.clearRetainingCapacity();
+            }
+            try tokens.append(Token{ .type = .rightParen, .value = ")" });
+            i += 1;
+            continue;
+        }
+
+        if (std.ascii.isWhitespace(c)) {
+            if (current_token.items.len > 0) {
+                try tokens.append(decideTokenType(try allocator.dupe(u8, current_token.items)));
+                current_token.clearRetainingCapacity();
+            }
+            i += 1;
+            continue;
+        }
+
+        try current_token.append(c);
+        i += 1;
+    }
+
+    if (current_token.items.len > 0) {
+        try tokens.append(decideTokenType(try allocator.dupe(u8, current_token.items)));
+    }
+}
+
+fn decideTokenType(value: []const u8) Token {
+    if (std.ascii.eqlIgnoreCase(value, "AND") or
+        std.ascii.eqlIgnoreCase(value, "OR") or
+        std.ascii.eqlIgnoreCase(value, "NOT"))
+    {
+        return Token{ .type = .logicalOperator, .value = value };
+    }
+
+    if (std.mem.eql(u8, value, "eq") or
+        std.mem.eql(u8, value, "ne") or
+        std.mem.eql(u8, value, "gt") or
+        std.mem.eql(u8, value, "lt") or
+        std.mem.eql(u8, value, "ge") or
+        std.mem.eql(u8, value, "le"))
+    {
+        return Token{ .type = .operator, .value = value };
+    }
+
+    return Token{ .type = .field, .value = value };
+}
+
+fn parseExpression(allocator: std.mem.Allocator, tokens: []Token, pos: *usize) !QueryNode {
+    if (pos.* >= tokens.len) {
+        return error.UnexpectedEndOfQuery;
+    }
+
+    if (pos.* + 1 < tokens.len and
+        tokens[pos.*].type == .logicalOperator and
+        std.ascii.eqlIgnoreCase(tokens[pos.*].value, "NOT"))
+    {
+        pos.* += 1;
+
+        if (pos.* < tokens.len and tokens[pos.*].type == .leftParen) {
+            pos.* += 1;
+            const inner_expr = try parseExpression(allocator, tokens, pos);
+
+            if (pos.* < tokens.len and tokens[pos.*].type == .rightParen) {
+                pos.* += 1;
+                return try QueryNode.notOp(allocator, inner_expr);
+            } else {
+                return error.MissingRightParenthesis;
+            }
+        } else {
+            const inner_expr = try parseExpression(allocator, tokens, pos);
+            return try QueryNode.notOp(allocator, inner_expr);
+        }
+    }
+
+    var left_node: QueryNode = undefined;
+
+    if (pos.* < tokens.len and tokens[pos.*].type == .leftParen) {
+        pos.* += 1;
+        left_node = try parseExpression(allocator, tokens, pos);
+
+        if (pos.* < tokens.len and tokens[pos.*].type == .rightParen) {
+            pos.* += 1;
+        } else {
+            return error.MissingRightParenthesis;
+        }
+    } else if (pos.* + 2 < tokens.len and
+        tokens[pos.*].type == .field and
+        tokens[pos.* + 1].type == .operator and
+        (tokens[pos.* + 2].type == .value or tokens[pos.* + 2].type == .field))
+    {
+        left_node = try parseSimpleCondition(allocator, tokens[pos.*].value, tokens[pos.* + 1].value, tokens[pos.* + 2].value);
+        pos.* += 3;
+    } else {
+        return error.InvalidQueryExpression;
+    }
+
+    if (pos.* < tokens.len and tokens[pos.*].type == .logicalOperator) {
+        const op_token = tokens[pos.*];
+        pos.* += 1;
+
+        const right_node = try parseExpression(allocator, tokens, pos);
+
+        if (std.ascii.eqlIgnoreCase(op_token.value, "AND")) {
+            return try QueryNode.andOp(allocator, left_node, right_node);
+        } else if (std.ascii.eqlIgnoreCase(op_token.value, "OR")) {
+            return try QueryNode.orOp(allocator, left_node, right_node);
+        } else {
+            return error.UnsupportedLogicalOperator;
+        }
+    }
+
+    return left_node;
+}
+
+fn parseSimpleCondition(allocator: std.mem.Allocator, field: []const u8, op_str: []const u8, value_str: []const u8) !QueryNode {
     const op = utils.stringToOperator(op_str) catch {
-        try writer.print("Error: Invalid operator '{s}'\n", .{op_str});
-        try writer.print("Valid operators: eq, gt, lt, ge, le\n", .{});
-        return;
+        return error.InvalidOperator;
     };
 
     var query = Query.init(allocator);
     var field_query = query.field(field);
 
-    var condition: Condition = undefined;
-
-    if (std.fmt.parseInt(i64, final_value_str, 10)) |int_val| {
-        condition = switch (op) {
+    if (std.fmt.parseInt(i64, value_str, 10)) |int_val| {
+        return switch (op) {
             .eq => field_query.eq(int_val),
+            .ne => field_query.ne(int_val),
             .gt => field_query.gt(int_val),
             .lt => field_query.lt(int_val),
             .ge => field_query.ge(int_val),
             .le => field_query.le(int_val),
         };
     } else |_| {
-        if (std.fmt.parseFloat(f64, final_value_str)) |float_val| {
-            condition = switch (op) {
+        if (std.fmt.parseFloat(f64, value_str)) |float_val| {
+            return switch (op) {
                 .eq => field_query.eq(float_val),
+                .ne => field_query.ne(float_val),
                 .gt => field_query.gt(float_val),
                 .lt => field_query.lt(float_val),
                 .ge => field_query.ge(float_val),
                 .le => field_query.le(float_val),
             };
         } else |_| {
-            var final_str_val = final_value_str;
+            var final_str_val = value_str;
             if (final_str_val.len >= 2 and final_str_val[0] == '"' and final_str_val[final_str_val.len - 1] == '"') {
                 final_str_val = final_str_val[1 .. final_str_val.len - 1];
             }
-            condition = switch (op) {
+
+            return switch (op) {
                 .eq => field_query.eq(final_str_val),
-                else => {
-                    try writer.print("Error: Operator '{s}' not supported for string comparison (only 'eq')\n", .{op_str});
-                    return;
-                },
+                .ne => field_query.ne(final_str_val),
+                .gt, .lt, .ge, .le => error.StringComparisonNotSupported,
             };
         }
-    }
-
-    const docs = try table_ptr.search(condition);
-    try writer.print("Found {d} documents in table '{s}' matching condition:\n", .{ docs.len, table_name });
-    for (docs) |doc| {
-        try writer.print("ID: {?d} - ", .{doc.id});
-        try doc.toJson(writer);
-        try writer.print("\n", .{});
     }
 }
 

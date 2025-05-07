@@ -1,6 +1,7 @@
 const std = @import("std");
 const Document = @import("document").Document;
 const Storage = @import("storage").Storage;
+const QueryNode = @import("query").QueryNode;
 const Condition = @import("query").Condition;
 
 pub const Table = struct {
@@ -44,7 +45,23 @@ pub const Table = struct {
         return id;
     }
 
-    pub fn search(self: Table, condition: ?Condition) ![]Document {
+    pub fn search(self: Table, query_node: ?QueryNode) ![]Document {
+        if (query_node == null) return self.documents.items;
+
+        var matches = std.ArrayList(Document).init(self.allocator);
+        defer matches.deinit();
+
+        for (self.documents.items) |doc| {
+            if (query_node.?.evaluate(doc)) {
+                try matches.append(doc);
+            }
+        }
+
+        const result = try self.allocator.dupe(Document, matches.items);
+        return result;
+    }
+
+    pub fn searchByCondition(self: Table, condition: ?Condition) ![]Document {
         if (condition == null) return self.documents.items;
 
         var matches = std.ArrayList(Document).init(self.allocator);
