@@ -49,6 +49,8 @@ pub fn main() !void {
             try handleFind(stdout, &db, &cmd_iter, allocator);
         } else if (std.mem.eql(u8, cmd, "update")) {
             try handleUpdate(stdout, &db, &cmd_iter, allocator);
+        } else if (std.mem.eql(u8, cmd, "upsert")) {
+            try handleUpsert(stdout, &db, &cmd_iter, allocator);
         } else if (std.mem.eql(u8, cmd, "delete")) {
             try handleDelete(stdout, &db, &cmd_iter, allocator);
         } else if (std.mem.eql(u8, cmd, "list")) {
@@ -89,6 +91,7 @@ fn printHelp(writer: anytype) !void {
         \\  find <table> [query]                 - Find documents in table with optional query
         \\  update <table> <id> <json>           - Update document by ID
         \\  update <table> <query> with <json>   - Update documents matching query
+        \\  upsert <table> <query> with <json>   - Update if documents match query, otherwise insert
         \\  delete <table> <id>                  - Delete document by ID
         \\  delete <table> <query>               - Delete documents matching query
         \\  list tables                          - List all tables
@@ -108,6 +111,7 @@ fn printHelp(writer: anytype) !void {
         \\Examples:
         \\  create users
         \\  insert users {{"name":"John","age":30}}
+        \\  upsert users name eq "John" with {{"name":"John","age":31}}
         \\  find users age gt 25
         \\  find users name matches "Jo*"
         \\  find users (age gt 25) AND (name eq "John")
@@ -658,6 +662,90 @@ fn handleDelete(
         };
 
         try writer.print("Deleted {d} document(s) matching query\n", .{deleted_count});
+    }
+}
+
+fn handleUpsert(
+    writer: anytype,
+    db: *Database,
+    cmd_iter: *std.mem.SplitIterator(u8, .sequence),
+    allocator: std.mem.Allocator,
+) !void {
+    const table_name = cmd_iter.next() orelse {
+        try writer.print("Error: Missing table name\n", .{});
+        return;
+    };
+
+    const table_ptr = db.table(table_name) catch {
+        try writer.print("Error: Table '{s}' not found\n", .{table_name});
+        return;
+    };
+
+    var query_string = std.ArrayList(u8).init(allocator);
+    defer query_string.deinit();
+
+    var found_with = false;
+    var current_part: ?[]const u8 = null;
+
+    while (true) {
+        current_part = cmd_iter.next();
+        if (current_part == null) break;
+
+        if (std.mem.eql(u8, current_part.?, "with")) {
+            found_with = true;
+            break;
+        }
+
+        if (query_string.items.len > 0) {
+            try query_string.append(' ');
+        }
+        try query_string.appendSlice(current_part.?);
+    }
+
+    if (!found_with) {
+        try writer.print("Error: Missing 'with' keyword in upsert command\n", .{});
+        try writer.print("Syntax: upsert <table> <query> with <json>\n", .{});
+        return;
+    }
+
+    var json_string = std.ArrayList(u8).init(allocator);
+    defer json_string.deinit();
+    var first_part = true;
+
+    while (cmd_iter.next()) |part| {
+        if (!first_part) {
+            try json_string.append(' ');
+        } else {
+            first_part = false;
+        }
+        try json_string.appendSlice(part);
+    }
+
+    if (json_string.items.len == 0) {
+        try writer.print("Error: Missing JSON data after 'with' keyword\n", .{});
+        return;
+    }
+
+    var query_node = parseQuery(allocator, query_string.items) catch |err| {
+        try writer.print("Error parsing query: {s}\n", .{@errorName(err)});
+        return;
+    };
+    defer query_node.deinit();
+
+    const result = table_ptr.upsert(query_node, json_string.items) catch |err| {
+        const err_name = @errorName(err);
+        if (std.mem.eql(u8, err_name, "JsonParseFailed")) {
+            try writer.print("Error: Invalid JSON format\n", .{});
+            try writer.print("  -> Check JSON syntax: {s}\n", .{json_string.items});
+        } else {
+            try writer.print("Error during upsert: {s}\n", .{err_name});
+        }
+        return;
+    };
+
+    switch (result.operation) {
+        .update => try writer.print("Updated {d} document(s) matching query\n", .{result.count}),
+        .insert => try writer.print("No documents matched query, inserted new document with ID: {d}\n", .{result.id.?}),
     }
 }
 

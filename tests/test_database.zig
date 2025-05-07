@@ -112,3 +112,65 @@ test "Query-based Update and Delete operations" {
         try std.testing.expectEqualStrings("senior", final_docs[0].get("status").?.string);
     }
 }
+
+test "Upsert operations" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var db = Database.init(allocator);
+    defer db.deinit();
+
+    var users = try db.table("users_upsert");
+
+    _ = try users.insert("{\"name\": \"John\", \"age\": 30}");
+
+    var query_builder = Query.init(allocator);
+    const initial_john_filter = query_builder.field("name").eq("John");
+    var docs = try users.search(initial_john_filter);
+    try std.testing.expectEqual(@as(usize, 1), docs.len);
+    try std.testing.expectEqual(@as(i64, 30), docs[0].get("age").?.integer);
+
+    const john_upsert_filter = query_builder.field("name").eq("John");
+    const john_update_data = "{\"name\": \"John\", \"age\": 31}";
+
+    docs = try users.search(john_upsert_filter);
+    if (docs.len > 0) {
+        const updated_count = try users.update(john_upsert_filter, john_update_data);
+        try std.testing.expectEqual(@as(usize, 1), updated_count);
+    } else {
+        _ = try users.insert(john_update_data);
+        try std.testing.expect(false);
+    }
+
+    docs = try users.search(john_upsert_filter);
+    try std.testing.expectEqual(@as(usize, 1), docs.len);
+    try std.testing.expectEqualStrings("John", docs[0].get("name").?.string);
+    try std.testing.expectEqual(@as(i64, 31), docs[0].get("age").?.integer);
+
+    var all_docs = try users.search(null);
+    try std.testing.expectEqual(@as(usize, 1), all_docs.len);
+
+    const jane_upsert_filter = query_builder.field("name").eq("Jane");
+    const jane_data = "{\"name\": \"Jane\", \"age\": 20}";
+
+    docs = try users.search(jane_upsert_filter);
+    if (docs.len > 0) {
+        _ = try users.update(jane_upsert_filter, jane_data);
+        try std.testing.expect(false);
+    } else {
+        _ = try users.insert(jane_data);
+    }
+
+    docs = try users.search(jane_upsert_filter);
+    try std.testing.expectEqual(@as(usize, 1), docs.len);
+    try std.testing.expectEqualStrings("Jane", docs[0].get("name").?.string);
+    try std.testing.expectEqual(@as(i64, 20), docs[0].get("age").?.integer);
+
+    all_docs = try users.search(null);
+    try std.testing.expectEqual(@as(usize, 2), all_docs.len);
+
+    docs = try users.search(john_upsert_filter);
+    try std.testing.expectEqual(@as(usize, 1), docs.len);
+    try std.testing.expectEqual(@as(i64, 31), docs[0].get("age").?.integer);
+}

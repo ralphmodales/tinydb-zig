@@ -174,6 +174,46 @@ pub const Table = struct {
 
         return removed_count;
     }
+
+    pub const UpsertOperation = enum {
+        insert,
+        update,
+    };
+
+    pub const UpsertResult = struct {
+        operation: UpsertOperation,
+        count: usize,
+        id: ?u64 = null,
+    };
+
+    pub fn upsert(self: *Table, query_node: ?QueryNode, json_str: []const u8) !UpsertResult {
+        const matches = try self.search(query_node);
+        defer self.allocator.free(matches);
+
+        if (matches.len > 0) {
+            var updated_count: usize = 0;
+            for (matches) |match| {
+                for (self.documents.items) |*doc| {
+                    if (doc.id == match.id) {
+                        const id = doc.id;
+                        doc.deinit();
+                        doc.* = try Document.initFromJson(self.allocator, json_str, id);
+                        updated_count += 1;
+                        break;
+                    }
+                }
+            }
+
+            if (updated_count > 0) {
+                try self.storage.write(self.documents.items);
+            }
+
+            return UpsertResult{ .operation = .update, .count = updated_count };
+        } else {
+            const id = try self.insert(json_str);
+            return UpsertResult{ .operation = .insert, .count = 1, .id = id };
+        }
+    }
 };
 
 pub const Database = struct {
