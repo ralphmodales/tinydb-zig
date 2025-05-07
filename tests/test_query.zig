@@ -167,3 +167,121 @@ test "Query with nested field paths" {
     try std.testing.expect(found_alice);
     try std.testing.expect(found_charlie);
 }
+
+test "Query with pattern matching" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var db = Database.init(allocator);
+    defer db.deinit();
+    var products = try db.table("products_test_match");
+
+    _ = try products.insert("{\"name\": \"iPhone 15\", \"category\": \"smartphone\", \"tags\": \"apple,mobile,premium\"}");
+    _ = try products.insert("{\"name\": \"MacBook Air\", \"category\": \"laptop\", \"tags\": \"apple,computer,premium\"}");
+    _ = try products.insert("{\"name\": \"Samsung Galaxy S24\", \"category\": \"smartphone\", \"tags\": \"samsung,mobile,premium\"}");
+    _ = try products.insert("{\"name\": \"Pixel 8\", \"category\": \"smartphone\", \"tags\": \"google,mobile,premium\"}");
+    _ = try products.insert("{\"name\": \"ThinkPad X1\", \"category\": \"laptop\", \"tags\": \"lenovo,computer,business\"}");
+
+    {
+        var query = Query.init(allocator);
+        const prefix_match = query.field("name").matches("iPhone*");
+
+        const results = try products.search(prefix_match);
+        defer allocator.free(results);
+
+        try std.testing.expectEqual(@as(usize, 1), results.len);
+        try std.testing.expectEqualStrings("iPhone 15", results[0].get("name").?.string);
+    }
+
+    {
+        var query = Query.init(allocator);
+        const suffix_match = query.field("name").matches("*Book*");
+
+        const results = try products.search(suffix_match);
+        defer allocator.free(results);
+
+        try std.testing.expectEqual(@as(usize, 2), results.len);
+
+        var found_macbook = false;
+        var found_thinkpad = false;
+
+        for (results) |doc| {
+            const name = doc.get("name").?.string;
+            if (std.mem.eql(u8, name, "MacBook Air")) found_macbook = true;
+            if (std.mem.eql(u8, name, "ThinkPad X1")) found_thinkpad = true;
+        }
+
+        try std.testing.expect(found_macbook);
+        try std.testing.expect(found_thinkpad);
+    }
+
+    {
+        var query = Query.init(allocator);
+        const contains_match = query.field("name").matches("*pad*");
+
+        const results = try products.search(contains_match);
+        defer allocator.free(results);
+
+        try std.testing.expectEqual(@as(usize, 1), results.len);
+        try std.testing.expectEqualStrings("ThinkPad X1", results[0].get("name").?.string);
+    }
+
+    {
+        var query = Query.init(allocator);
+        const single_char_match = query.field("name").matches("iPhone 1?");
+
+        const results = try products.search(single_char_match);
+        defer allocator.free(results);
+
+        try std.testing.expectEqual(@as(usize, 1), results.len);
+        try std.testing.expectEqualStrings("iPhone 15", results[0].get("name").?.string);
+    }
+
+    {
+        var query = Query.init(allocator);
+        const complex_pattern = query.field("name").matches("*a*n*");
+
+        const results = try products.search(complex_pattern);
+        defer allocator.free(results);
+
+        try std.testing.expectEqual(@as(usize, 2), results.len);
+
+        var found_samsung = false;
+        var found_thinkpad = false;
+
+        for (results) |doc| {
+            const name = doc.get("name").?.string;
+            if (std.mem.eql(u8, name, "Samsung Galaxy S24")) found_samsung = true;
+            if (std.mem.eql(u8, name, "ThinkPad X1")) found_thinkpad = true;
+        }
+
+        try std.testing.expect(found_samsung);
+        try std.testing.expect(found_thinkpad);
+    }
+
+    {
+        var query = Query.init(allocator);
+        const tag_pattern = query.field("tags").matches("*mobile*");
+
+        const results = try products.search(tag_pattern);
+        defer allocator.free(results);
+
+        try std.testing.expectEqual(@as(usize, 3), results.len);
+
+        var found_iphone = false;
+        var found_samsung = false;
+        var found_pixel = false;
+
+        for (results) |doc| {
+            const name = doc.get("name").?.string;
+            if (std.mem.eql(u8, name, "iPhone 15")) found_iphone = true;
+            if (std.mem.eql(u8, name, "Samsung Galaxy S24")) found_samsung = true;
+            if (std.mem.eql(u8, name, "Pixel 8")) found_pixel = true;
+        }
+
+        try std.testing.expect(found_iphone);
+        try std.testing.expect(found_samsung);
+        try std.testing.expect(found_pixel);
+    }
+}

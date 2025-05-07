@@ -8,6 +8,7 @@ pub const Operator = enum {
     lt, // <
     ge, // >=
     le, // <=
+    matches, // regex like pattern matching
 };
 
 pub const LogicalOperator = enum {
@@ -30,8 +31,76 @@ pub const Condition = struct {
             .lt => compareValues(field_value, self.value, lt),
             .ge => compareValues(field_value, self.value, ge),
             .le => compareValues(field_value, self.value, le),
+            .matches => matchesPattern(field_value, self.value),
         };
     }
+
+    fn matchesPattern(field_value: std.json.Value, pattern_value: std.json.Value) bool {
+        if (field_value != .string or pattern_value != .string) {
+            return false;
+        }
+
+        return simplePatternMatch(field_value.string, pattern_value.string);
+    }
+
+    fn simplePatternMatch(text: []const u8, pattern: []const u8) bool {
+        if (pattern.len == 0) {
+            return text.len == 0;
+        }
+
+        if (pattern.len == 1 and pattern[0] == '*') {
+            return true;
+        }
+
+        var dp = DpMatrix.init();
+
+        dp.set(0, 0, true);
+
+        for (1..pattern.len + 1) |i| {
+            if (pattern[i - 1] == '*') {
+                dp.set(i, 0, dp.get(i - 1, 0));
+            }
+        }
+
+        for (1..pattern.len + 1) |i| {
+            for (1..text.len + 1) |j| {
+                if (pattern[i - 1] == '*') {
+                    dp.set(i, j, dp.get(i - 1, j) or dp.get(i, j - 1));
+                } else if (pattern[i - 1] == '?' or pattern[i - 1] == text[j - 1]) {
+                    dp.set(i, j, dp.get(i - 1, j - 1));
+                } else {
+                    dp.set(i, j, false);
+                }
+            }
+        }
+
+        return dp.get(pattern.len, text.len);
+    }
+
+    const DpMatrix = struct {
+        data: [64][64]bool = undefined,
+
+        fn init() DpMatrix {
+            var matrix: DpMatrix = .{};
+            for (0..64) |i| {
+                for (0..64) |j| {
+                    matrix.data[i][j] = false;
+                }
+            }
+            return matrix;
+        }
+
+        fn get(self: DpMatrix, i: usize, j: usize) bool {
+            if (i >= 64 or j >= 64) return false;
+            return self.data[i][j];
+        }
+
+        fn set(self: *DpMatrix, i: usize, j: usize, value: bool) void {
+            if (i < 64 and j < 64) {
+                self.data[i][j] = value;
+            }
+        }
+    };
 
     fn eqlValues(a: std.json.Value, b: std.json.Value) bool {
         return switch (a) {
@@ -281,6 +350,14 @@ pub const FieldQuery = struct {
             .field = self.field,
             .operator = .le,
             .value = jsonValue(value),
+        } };
+    }
+
+    pub fn matches(self: FieldQuery, pattern: []const u8) QueryNode {
+        return QueryNode{ .condition = Condition{
+            .field = self.field,
+            .operator = .matches,
+            .value = jsonValue(pattern),
         } };
     }
 };

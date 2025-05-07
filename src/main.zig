@@ -100,12 +100,14 @@ fn printHelp(writer: anytype) !void {
         \\
         \\Operators:
         \\  eq, ne, gt, lt, ge, le       - Equal, Not Equal, Greater Than, Less Than, Greater/Equal, Less/Equal
+        \\  matches                      - Pattern matching with wildcards (* and ?)
         \\  AND, OR, NOT                 - Logical operators (case insensitive)
         \\
         \\Examples:
         \\  create users
         \\  insert users {{"name":"John","age":30}}
         \\  find users age gt 25
+        \\  find users name matches "Jo*"
         \\  find users (age gt 25) AND (name eq "John")
         \\  find users (age gt 20) OR (name eq "Jane")
         \\  find users NOT (age lt 30)
@@ -262,10 +264,14 @@ fn tokenizeQuery(allocator: std.mem.Allocator, query_str: []const u8, tokens: *s
 
         if (c == '"') {
             if (!in_quotes) {
+                if (current_token.items.len > 0) {
+                    try tokens.append(decideTokenType(try allocator.dupe(u8, current_token.items)));
+                    current_token.clearRetainingCapacity();
+                }
                 in_quotes = true;
-                token_start = i + 1;
+                token_start = i;
             } else {
-                try current_token.appendSlice(query_str[token_start..i]);
+                try current_token.appendSlice(query_str[token_start .. i + 1]);
                 try tokens.append(Token{ .type = .value, .value = try allocator.dupe(u8, current_token.items) });
                 current_token.clearRetainingCapacity();
                 in_quotes = false;
@@ -280,6 +286,10 @@ fn tokenizeQuery(allocator: std.mem.Allocator, query_str: []const u8, tokens: *s
         }
 
         if (c == '(') {
+            if (current_token.items.len > 0) {
+                try tokens.append(decideTokenType(try allocator.dupe(u8, current_token.items)));
+                current_token.clearRetainingCapacity();
+            }
             try tokens.append(Token{ .type = .leftParen, .value = "(" });
             i += 1;
             continue;
@@ -324,7 +334,8 @@ fn decideTokenType(value: []const u8) Token {
         std.mem.eql(u8, value, "gt") or
         std.mem.eql(u8, value, "lt") or
         std.mem.eql(u8, value, "ge") or
-        std.mem.eql(u8, value, "le"))
+        std.mem.eql(u8, value, "le") or
+        std.mem.eql(u8, value, "matches"))
     {
         return Token{ .type = .operator, .value = value };
     }
@@ -407,7 +418,16 @@ fn parseSimpleCondition(allocator: std.mem.Allocator, field: []const u8, op_str:
     var query = Query.init(allocator);
     var field_query = query.field(field);
 
-    if (std.fmt.parseInt(i64, value_str, 10)) |int_val| {
+    var final_value_str = value_str;
+    if (final_value_str.len >= 2 and final_value_str[0] == '"' and final_value_str[final_value_str.len - 1] == '"') {
+        final_value_str = final_value_str[1 .. final_value_str.len - 1];
+    }
+
+    if (op == .matches) {
+        return field_query.matches(final_value_str);
+    }
+
+    if (std.fmt.parseInt(i64, final_value_str, 10)) |int_val| {
         return switch (op) {
             .eq => field_query.eq(int_val),
             .ne => field_query.ne(int_val),
@@ -415,9 +435,10 @@ fn parseSimpleCondition(allocator: std.mem.Allocator, field: []const u8, op_str:
             .lt => field_query.lt(int_val),
             .ge => field_query.ge(int_val),
             .le => field_query.le(int_val),
+            .matches => unreachable,
         };
     } else |_| {
-        if (std.fmt.parseFloat(f64, value_str)) |float_val| {
+        if (std.fmt.parseFloat(f64, final_value_str)) |float_val| {
             return switch (op) {
                 .eq => field_query.eq(float_val),
                 .ne => field_query.ne(float_val),
@@ -425,16 +446,13 @@ fn parseSimpleCondition(allocator: std.mem.Allocator, field: []const u8, op_str:
                 .lt => field_query.lt(float_val),
                 .ge => field_query.ge(float_val),
                 .le => field_query.le(float_val),
+                .matches => unreachable,
             };
         } else |_| {
-            var final_str_val = value_str;
-            if (final_str_val.len >= 2 and final_str_val[0] == '"' and final_str_val[final_str_val.len - 1] == '"') {
-                final_str_val = final_str_val[1 .. final_str_val.len - 1];
-            }
-
             return switch (op) {
-                .eq => field_query.eq(final_str_val),
-                .ne => field_query.ne(final_str_val),
+                .eq => field_query.eq(final_value_str),
+                .ne => field_query.ne(final_value_str),
+                .matches => field_query.matches(final_value_str),
                 .gt, .lt, .ge, .le => error.StringComparisonNotSupported,
             };
         }

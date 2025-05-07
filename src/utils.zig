@@ -14,6 +14,8 @@ pub fn stringToOperator(op_str: []const u8) !Operator {
         return Operator.ge;
     } else if (std.mem.eql(u8, op_str, "le")) {
         return Operator.le;
+    } else if (std.mem.eql(u8, op_str, "matches")) {
+        return Operator.matches;
     } else {
         return error.InvalidOperator;
     }
