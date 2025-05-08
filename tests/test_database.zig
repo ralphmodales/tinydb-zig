@@ -174,3 +174,35 @@ test "Upsert operations" {
     try std.testing.expectEqual(@as(usize, 1), docs.len);
     try std.testing.expectEqual(@as(i64, 31), docs[0].get("age").?.integer);
 }
+
+test "Bulk Insert operations" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var db = Database.init(allocator);
+    defer db.deinit();
+
+    const table_name = "users_bulk_test";
+    var users = try db.table(table_name);
+
+    const docs = [_][]const u8{ "{\"name\": \"John\", \"age\": 30}", "{\"name\": \"Jane\", \"age\": 20}" };
+
+    const ids = try users.insertMultiple(&docs);
+    defer allocator.free(ids);
+
+    try std.testing.expectEqual(@as(usize, 2), ids.len);
+    try std.testing.expectEqual(@as(u64, 1), ids[0]);
+    try std.testing.expectEqual(@as(u64, 2), ids[1]);
+
+    const retrieved_docs = try users.search(null);
+    try std.testing.expectEqual(@as(usize, 2), retrieved_docs.len);
+
+    try std.testing.expectEqualStrings("John", retrieved_docs[0].get("name").?.string);
+    try std.testing.expectEqual(@as(i64, 30), retrieved_docs[0].get("age").?.integer);
+    try std.testing.expectEqual(@as(u64, 1), retrieved_docs[0].id.?);
+
+    try std.testing.expectEqualStrings("Jane", retrieved_docs[1].get("name").?.string);
+    try std.testing.expectEqual(@as(i64, 20), retrieved_docs[1].get("age").?.integer);
+    try std.testing.expectEqual(@as(u64, 2), retrieved_docs[1].id.?);
+}

@@ -45,6 +45,23 @@ pub const Table = struct {
         return id;
     }
 
+    pub fn insertMultiple(self: *Table, json_strings: []const []const u8) ![]u64 {
+        var ids = std.ArrayList(u64).init(self.allocator);
+        defer ids.deinit();
+
+        const start_id = self.documents.items.len + 1;
+
+        for (json_strings, 0..) |json_str, i| {
+            const id = @as(u64, start_id + i);
+            const doc = try Document.initFromJson(self.allocator, json_str, id);
+            try self.documents.append(doc);
+            try ids.append(id);
+        }
+
+        try self.storage.write(self.documents.items);
+        return try self.allocator.dupe(u64, ids.items);
+    }
+
     pub fn search(self: Table, query_node: ?QueryNode) ![]Document {
         if (query_node == null) return self.documents.items;
 

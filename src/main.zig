@@ -45,6 +45,8 @@ pub fn main() !void {
             try stdout.print("Table '{s}' created\n", .{table_name});
         } else if (std.mem.eql(u8, cmd, "insert")) {
             try handleInsert(stdout, &db, &cmd_iter, allocator);
+        } else if (std.mem.eql(u8, cmd, "insert_multiple")) {
+            try handleInsertMultiple(stdout, &db, &cmd_iter, allocator);
         } else if (std.mem.eql(u8, cmd, "find")) {
             try handleFind(stdout, &db, &cmd_iter, allocator);
         } else if (std.mem.eql(u8, cmd, "update")) {
@@ -88,6 +90,7 @@ fn printHelp(writer: anytype) !void {
         \\  help                                 - Show this help message
         \\  create <table>                       - Create a new table
         \\  insert <table> <json>                - Insert a new document into table
+        \\  insert_multiple <table> <json_array> - Insert multiple documents into table
         \\  find <table> [query]                 - Find documents in table with optional query
         \\  update <table> <id> <json>           - Update document by ID
         \\  update <table> <query> with <json>   - Update documents matching query
@@ -111,6 +114,7 @@ fn printHelp(writer: anytype) !void {
         \\Examples:
         \\  create users
         \\  insert users {{"name":"John","age":30}}
+        \\  insert_multiple users [{{"name":"John","age":30}},{{"name":"Jane","age":25}}]
         \\  upsert users name eq "John" with {{"name":"John","age":31}}
         \\  find users age gt 25
         \\  find users name matches "Jo*"
@@ -170,6 +174,117 @@ fn handleInsert(
     };
 
     try writer.print("Document inserted with ID: {d}\n", .{doc_id});
+}
+
+fn handleInsertMultiple(
+    writer: anytype,
+    db: *Database,
+    cmd_iter: *std.mem.SplitIterator(u8, .sequence),
+    allocator: std.mem.Allocator,
+) !void {
+    const table_name = cmd_iter.next() orelse {
+        try writer.print("Error: Missing table name\n", .{});
+        return;
+    };
+
+    var json_string = std.ArrayList(u8).init(allocator);
+    defer json_string.deinit();
+
+    var first_part = true;
+    while (cmd_iter.next()) |part| {
+        if (!first_part) {
+            try json_string.append(' ');
+        } else {
+            first_part = false;
+        }
+        try json_string.appendSlice(part);
+    }
+
+    if (json_string.items.len == 0) {
+        try writer.print("Error: Missing JSON array data\n", .{});
+        return;
+    }
+
+    const trimmed = std.mem.trim(u8, json_string.items, " \t\r\n");
+    if (trimmed.len < 2 or trimmed[0] != '[' or trimmed[trimmed.len - 1] != ']') {
+        try writer.print("Error: JSON array must be enclosed in square brackets []\n", .{});
+        return;
+    }
+
+    const table_ptr = db.table(table_name) catch {
+        try writer.print("Error: Table '{s}' not found\n", .{table_name});
+        return;
+    };
+
+    var json_docs = std.ArrayList([]const u8).init(allocator);
+    defer {
+        for (json_docs.items) |item| {
+            allocator.free(item);
+        }
+        json_docs.deinit();
+    }
+
+    var depth: u32 = 0;
+    var in_quotes = false;
+    var escaped = false;
+    var start: usize = 0;
+    var i: usize = 0;
+
+    i = 1;
+    while (i < trimmed.len - 1) {
+        if (depth == 0 and std.ascii.isWhitespace(trimmed[i])) {
+            i += 1;
+            continue;
+        }
+
+        if (depth == 0 and trimmed[i] == '{') {
+            start = i;
+            depth += 1;
+        } else if (in_quotes) {
+            if (escaped) {
+                escaped = false;
+            } else if (trimmed[i] == '\\') {
+                escaped = true;
+            } else if (trimmed[i] == '"') {
+                in_quotes = false;
+            }
+        } else if (trimmed[i] == '"') {
+            in_quotes = true;
+        } else if (trimmed[i] == '{') {
+            depth += 1;
+        } else if (trimmed[i] == '}') {
+            depth -= 1;
+            if (depth == 0) {
+                const doc_str = try allocator.dupe(u8, trimmed[start .. i + 1]);
+                try json_docs.append(doc_str);
+            }
+        }
+
+        i += 1;
+    }
+
+    if (json_docs.items.len == 0) {
+        try writer.print("Error: No valid JSON objects found in array\n", .{});
+        return;
+    }
+
+    const ids = table_ptr.insertMultiple(json_docs.items) catch |err| {
+        try writer.print("Error inserting documents: {s}\n", .{@errorName(err)});
+        if (err == error.JsonParseFailed) {
+            try writer.print("  -> Check JSON syntax\n", .{});
+        }
+        return;
+    };
+    defer allocator.free(ids);
+
+    try writer.print("Inserted {d} documents with IDs: ", .{ids.len});
+    for (ids, 0..) |id, idx| {
+        try writer.print("{d}", .{id});
+        if (idx < ids.len - 1) {
+            try writer.print(", ", .{});
+        }
+    }
+    try writer.print("\n", .{});
 }
 
 fn handleFind(
