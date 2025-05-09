@@ -83,6 +83,10 @@ pub fn main() !void {
                 };
 
                 const docs = try table_ptr.search(null);
+                defer {
+                    allocator.free(docs);
+                }
+
                 try stdout.print("Documents in table '{s}':\n", .{next_cmd});
                 for (docs) |doc| {
                     try stdout.print("ID: {?d} - ", .{doc.id});
@@ -328,6 +332,10 @@ fn handleFind(
 
     if (query_string.items.len == 0) {
         const docs = try table_ptr.search(null);
+        defer {
+            allocator.free(docs);
+        }
+
         try writer.print("Found {d} documents in table '{s}':\n", .{ docs.len, table_name });
         for (docs) |doc| {
             try writer.print("ID: {?d} - ", .{doc.id});
@@ -344,6 +352,10 @@ fn handleFind(
     defer query_node.deinit();
 
     const docs = try table_ptr.search(query_node);
+    defer {
+        allocator.free(docs);
+    }
+
     try writer.print("Found {d} documents in table '{s}' matching query:\n", .{ docs.len, table_name });
     for (docs) |doc| {
         try writer.print("ID: {?d} - ", .{doc.id});
@@ -369,7 +381,16 @@ const Token = struct {
 
 fn parseQuery(allocator: std.mem.Allocator, query_str: []const u8) !QueryNode {
     var tokens = std.ArrayList(Token).init(allocator);
-    defer tokens.deinit();
+    defer {
+        for (tokens.items) |token| {
+            if (!std.mem.eql(u8, token.value, "(") and
+                !std.mem.eql(u8, token.value, ")"))
+            {
+                allocator.free(token.value);
+            }
+        }
+        tokens.deinit();
+    }
 
     try tokenizeQuery(allocator, query_str, &tokens);
 
@@ -382,7 +403,17 @@ fn parseQuery(allocator: std.mem.Allocator, query_str: []const u8) !QueryNode {
         tokens.items[1].type == .operator and
         tokens.items[2].type == .value)
     {
-        return try parseSimpleCondition(allocator, tokens.items[0].value, tokens.items[1].value, tokens.items[2].value);
+        const field = try allocator.dupe(u8, tokens.items[0].value);
+        const op = try allocator.dupe(u8, tokens.items[1].value);
+        const value = try allocator.dupe(u8, tokens.items[2].value);
+
+        const result = try parseSimpleCondition(allocator, field, op, value);
+
+        allocator.free(field);
+        allocator.free(op);
+        allocator.free(value);
+
+        return result;
     }
 
     var pos: usize = 0;
@@ -424,18 +455,26 @@ fn tokenizeQuery(allocator: std.mem.Allocator, query_str: []const u8, tokens: *s
 
         if (c == '(') {
             if (current_token.items.len > 0) {
-                try tokens.append(decideTokenType(try allocator.dupe(u8, current_token.items)));
+                const token_value = try allocator.dupe(u8, current_token.items);
+                errdefer allocator.free(token_value);
+                try tokens.append(decideTokenType(token_value));
                 current_token.clearRetainingCapacity();
             }
-            try tokens.append(Token{ .type = .leftParen, .value = "(" });
+            const paren_str = try allocator.dupe(u8, "(");
+            errdefer allocator.free(paren_str);
+            try tokens.append(Token{ .type = .leftParen, .value = paren_str });
             i += 1;
             continue;
         } else if (c == ')') {
             if (current_token.items.len > 0) {
-                try tokens.append(decideTokenType(try allocator.dupe(u8, current_token.items)));
+                const token_value = try allocator.dupe(u8, current_token.items);
+                errdefer allocator.free(token_value);
+                try tokens.append(decideTokenType(token_value));
                 current_token.clearRetainingCapacity();
             }
-            try tokens.append(Token{ .type = .rightParen, .value = ")" });
+            const paren_str = try allocator.dupe(u8, ")");
+            errdefer allocator.free(paren_str);
+            try tokens.append(Token{ .type = .rightParen, .value = paren_str });
             i += 1;
             continue;
         }
@@ -557,6 +596,7 @@ fn parseSimpleCondition(allocator: std.mem.Allocator, field: []const u8, op_str:
     };
 
     var query = Query.init(allocator);
+
     var field_query = query.field(field);
 
     var final_value_str = value_str;
@@ -879,7 +919,9 @@ fn handleUpsert(
 
 fn listTables(writer: anytype, db: *Database) !void {
     var tables = std.ArrayList([]const u8).init(db.allocator);
-    defer tables.deinit();
+    defer {
+        tables.deinit();
+    }
 
     var iter = db.tables.keyIterator();
     while (iter.next()) |key| {
