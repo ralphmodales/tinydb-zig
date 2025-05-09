@@ -75,4 +75,45 @@ pub const Document = struct {
             try self.data.object.put(key, value);
         }
     }
+
+    pub fn clone(self: Document) !Document {
+        var cloned_data: std.json.Value = undefined;
+
+        if (self.data == .object) {
+            var new_obj = std.json.ObjectMap.init(self.allocator);
+
+            var it = self.data.object.iterator();
+            while (it.next()) |entry| {
+                var buf = std.ArrayList(u8).init(self.allocator);
+                defer buf.deinit();
+
+                try std.json.stringify(entry.value_ptr.*, .{}, buf.writer());
+
+                const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, buf.items, .{ .allocate = .alloc_always });
+
+                const key_copy = try self.allocator.dupe(u8, entry.key_ptr.*);
+                errdefer self.allocator.free(key_copy);
+
+                try new_obj.put(key_copy, parsed.value);
+            }
+
+            cloned_data = .{ .object = new_obj };
+        } else {
+            var buf = std.ArrayList(u8).init(self.allocator);
+            defer buf.deinit();
+
+            try std.json.stringify(self.data, .{}, buf.writer());
+
+            const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, buf.items, .{ .allocate = .alloc_always });
+
+            cloned_data = parsed.value;
+        }
+
+        return Document{
+            .id = self.id,
+            .data = cloned_data,
+            .allocator = self.allocator,
+            .parsed = null,
+        };
+    }
 };

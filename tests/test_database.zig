@@ -206,3 +206,23 @@ test "Bulk Insert operations" {
     try std.testing.expectEqual(@as(i64, 20), retrieved_docs[1].get("age").?.integer);
     try std.testing.expectEqual(@as(u64, 2), retrieved_docs[1].id.?);
 }
+
+test "MemoryStorage operations" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var db = Database.init(allocator);
+    defer db.deinit();
+
+    var users = try db.createTable("users", .memory);
+
+    const id = try users.insert("{\"name\": \"John\", \"age\": 30}");
+    try std.testing.expectEqual(@as(u64, 1), id);
+
+    const docs = try users.search(null);
+    try std.testing.expectEqual(@as(usize, 1), docs.len);
+    try std.testing.expectEqual(@as(u64, 1), docs[0].id);
+    try std.testing.expectEqualStrings("John", docs[0].get("name").?.string);
+    try std.testing.expectEqual(@as(i64, 30), docs[0].get("age").?.integer);
+}

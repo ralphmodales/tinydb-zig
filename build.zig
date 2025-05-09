@@ -8,6 +8,12 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/document.zig"),
     });
 
+    const memory_storage_module = b.addModule("memory_storage", .{
+        .root_source_file = b.path("src/memory_storage.zig"),
+    });
+
+    memory_storage_module.addImport("document", document_module);
+
     const query_module = b.addModule("query", .{
         .root_source_file = b.path("src/query.zig"),
     });
@@ -24,6 +30,7 @@ pub fn build(b: *std.Build) void {
     database_module.addImport("document", document_module);
     database_module.addImport("storage", storage_module);
     database_module.addImport("query", query_module);
+    database_module.addImport("memory_storage", memory_storage_module);
 
     const utils_module = b.addModule("utils", .{
         .root_source_file = b.path("src/utils.zig"),

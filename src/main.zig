@@ -41,8 +41,21 @@ pub fn main() !void {
                 try stdout.print("Error: Missing table name\n", .{});
                 continue;
             };
-            _ = try db.table(table_name);
-            try stdout.print("Table '{s}' created\n", .{table_name});
+
+            const storage_type_str = cmd_iter.next();
+            var storage_type: @import("database").StorageType = .file;
+            if (storage_type_str) |str| {
+                if (std.mem.eql(u8, str, "memory")) {
+                    storage_type = .memory;
+                } else if (std.mem.eql(u8, str, "file")) {
+                    storage_type = .file;
+                } else {
+                    try stdout.print("Error: Invalid storage type '{s}', using default (file)\n", .{str});
+                }
+            }
+
+            _ = try db.createTable(table_name, storage_type);
+            try stdout.print("Table '{s}' created with {s} storage\n", .{ table_name, if (storage_type == .memory) "memory" else "file" });
         } else if (std.mem.eql(u8, cmd, "insert")) {
             try handleInsert(stdout, &db, &cmd_iter, allocator);
         } else if (std.mem.eql(u8, cmd, "insert_multiple")) {
@@ -88,7 +101,7 @@ fn printHelp(writer: anytype) !void {
     try writer.print(
         \\Commands:
         \\  help                                 - Show this help message
-        \\  create <table>                       - Create a new table
+        \\  create <table> [storage_type]        - Create a new table (storage_type: file or memory, default: file)
         \\  insert <table> <json>                - Insert a new document into table
         \\  insert_multiple <table> <json_array> - Insert multiple documents into table
         \\  find <table> [query]                 - Find documents in table with optional query
@@ -112,7 +125,7 @@ fn printHelp(writer: anytype) !void {
         \\  AND, OR, NOT                 - Logical operators (case insensitive)
         \\
         \\Examples:
-        \\  create users
+        \\  create users memory
         \\  insert users {{"name":"John","age":30}}
         \\  insert_multiple users [{{"name":"John","age":30}},{{"name":"Jane","age":25}}]
         \\  upsert users name eq "John" with {{"name":"John","age":31}}

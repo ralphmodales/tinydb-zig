@@ -1,31 +1,51 @@
 const std = @import("std");
 const Document = @import("document").Document;
 const Storage = @import("storage").Storage;
+const MemoryStorage = @import("memory_storage").MemoryStorage;
 const QueryNode = @import("query").QueryNode;
 const Condition = @import("query").Condition;
 
+pub const StorageType = enum {
+    file,
+    memory,
+};
+
 pub const Table = struct {
     name: []const u8,
-    storage: Storage,
+    storage_type: StorageType,
+    storage: union {
+        file: Storage,
+        memory: MemoryStorage,
+    },
     documents: std.ArrayList(Document),
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, name: []const u8, file_path: []const u8) !Table {
-        var storage = Storage.init(allocator, file_path);
-        const documents = try storage.read();
-        defer allocator.free(documents);
-
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, storage_type: StorageType, file_path: ?[]const u8) !Table {
         var doc_list = std.ArrayList(Document).init(allocator);
-        try doc_list.appendSlice(documents);
-
         const owned_name = try allocator.dupe(u8, name);
 
-        return Table{
+        var table = Table{
             .name = owned_name,
-            .storage = storage,
+            .storage_type = storage_type,
+            .storage = undefined,
             .documents = doc_list,
             .allocator = allocator,
         };
+
+        switch (storage_type) {
+            .file => {
+                if (file_path == null) return error.FilePathRequired;
+                table.storage = .{ .file = Storage.init(allocator, file_path.?) };
+                const documents = try table.storage.file.read();
+                defer allocator.free(documents);
+                try doc_list.appendSlice(documents);
+            },
+            .memory => {
+                table.storage = .{ .memory = MemoryStorage.init(allocator) };
+            },
+        }
+
+        return table;
     }
 
     pub fn deinit(self: *Table) void {
@@ -34,14 +54,18 @@ pub const Table = struct {
         }
         self.documents.deinit();
         self.allocator.free(self.name);
-        self.storage.deinit();
+
+        switch (self.storage_type) {
+            .file => self.storage.file.deinit(),
+            .memory => self.storage.memory.deinit(),
+        }
     }
 
     pub fn insert(self: *Table, json_str: []const u8) !u64 {
         const id = @as(u64, self.documents.items.len + 1);
         const doc = try Document.initFromJson(self.allocator, json_str, id);
         try self.documents.append(doc);
-        try self.storage.write(self.documents.items);
+        try self.saveToStorage();
         return id;
     }
 
@@ -58,8 +82,15 @@ pub const Table = struct {
             try ids.append(id);
         }
 
-        try self.storage.write(self.documents.items);
+        try self.saveToStorage();
         return try self.allocator.dupe(u64, ids.items);
+    }
+
+    fn saveToStorage(self: *Table) !void {
+        switch (self.storage_type) {
+            .file => try self.storage.file.write(self.documents.items),
+            .memory => try self.storage.memory.write(self.documents.items),
+        }
     }
 
     pub fn search(self: Table, query_node: ?QueryNode) ![]Document {
@@ -99,7 +130,7 @@ pub const Table = struct {
             if (doc.id == id) {
                 doc.deinit();
                 doc.* = try Document.initFromJson(self.allocator, json_str, id);
-                try self.storage.write(self.documents.items);
+                try self.saveToStorage();
                 return;
             }
         }
@@ -129,7 +160,7 @@ pub const Table = struct {
         }
 
         if (updated_count > 0) {
-            try self.storage.write(self.documents.items);
+            try self.saveToStorage();
         }
 
         return updated_count;
@@ -140,7 +171,7 @@ pub const Table = struct {
             if (doc.id == id) {
                 var removed = self.documents.orderedRemove(i);
                 removed.deinit();
-                try self.storage.write(self.documents.items);
+                try self.saveToStorage();
                 return;
             }
         }
@@ -186,7 +217,7 @@ pub const Table = struct {
         }
 
         if (removed_count > 0) {
-            try self.storage.write(self.documents.items);
+            try self.saveToStorage();
         }
 
         return removed_count;
@@ -222,7 +253,7 @@ pub const Table = struct {
             }
 
             if (updated_count > 0) {
-                try self.storage.write(self.documents.items);
+                try self.saveToStorage();
             }
 
             return UpsertResult{ .operation = .update, .count = updated_count };
@@ -258,14 +289,27 @@ pub const Database = struct {
             return table_ptr;
         }
 
-        const file_path = try std.fmt.allocPrint(self.allocator, "{s}.json", .{name});
-        errdefer self.allocator.free(file_path);
+        return try self.createTable(name, .file);
+    }
+
+    pub fn createTable(self: *Database, name: []const u8, storage_type: StorageType) !*Table {
+        if (self.tables.getPtr(name)) |table_ptr| {
+            return table_ptr;
+        }
 
         const name_copy = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(name_copy);
 
-        const new_table = try Table.init(self.allocator, name, file_path);
-        self.allocator.free(file_path);
+        var file_path: ?[]const u8 = null;
+        if (storage_type == .file) {
+            file_path = try std.fmt.allocPrint(self.allocator, "{s}.json", .{name});
+            errdefer self.allocator.free(file_path.?);
+        }
+
+        const new_table = try Table.init(self.allocator, name, storage_type, file_path);
+        if (file_path != null) {
+            self.allocator.free(file_path.?);
+        }
 
         try self.tables.put(name_copy, new_table);
         return self.tables.getPtr(name_copy).?;
