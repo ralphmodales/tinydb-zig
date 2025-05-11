@@ -82,10 +82,7 @@ pub fn main() !void {
                     continue;
                 };
 
-                const docs = try table_ptr.search(null);
-                defer {
-                    allocator.free(docs);
-                }
+                const docs = table_ptr.documents.items;
 
                 try stdout.print("Documents in table '{s}':\n", .{next_cmd});
                 for (docs) |doc| {
